@@ -112,6 +112,7 @@ int main(int argc, char *argv[])
       int wasResponse = readFromFifo(requestBody.fifoName, response, MAX_RESPONSE);
       if (wasResponse == -1)
       {
+        unlink(requestBody.fifoName);
         continue;
       }
 

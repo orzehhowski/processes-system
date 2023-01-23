@@ -408,6 +408,8 @@ int executeCommands(char commands[], char fifoName[])
         printf("[1] saving result to fifo %s\n", fifoName);
 
         int fifoDs = open(fifoName, O_WRONLY);
+        fflush(stdin);
+        fflush(stdout);
         if (fifoDs == -1)
         {
           perror("open fifo error");
@@ -436,6 +438,11 @@ int executeCommands(char commands[], char fifoName[])
   for (i = 0; i < commandsNum * 2; i++)
   {
     close(pdesks[i]);
+  }
+
+  for (i = 0; i < commandsNum; i++)
+  {
+    free(commandsArray[i]);
   }
 
   return 0;
