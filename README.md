@@ -19,6 +19,12 @@ Process will receive this command, get key of given second process from config f
 
 Every process have got two synchronous threads - one to listen to users input, and second to recieve requests from other processes. Both of them will keep you updated by reporting their status.
 
+**Process communication mechamisms used:**
+
+- IPC message queue
+- FIFO
+- pipes
+
 ## warning
 
 Program may not work on Windows/MacOS.
