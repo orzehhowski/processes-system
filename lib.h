@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <fcntl.h>
 #include <sys/types.h>
+#include <sys/stat.h>
 #include <sys/ipc.h>
 #include <sys/msg.h>
 #include <errno.h>
@@ -12,11 +13,12 @@
 #define MAX_REQUEST 192
 #define MAX_COMMANDS_SIZE 64
 #define MAX_FIFO_NAME 64
+#define MAX_RESPONSE 1024
 
 struct msgbuf
 {
   long mtype;
-  char request[MAX_REQUEST];
+  char fifoName[MAX_FIFO_NAME];
 };
 
 struct request
@@ -51,7 +53,7 @@ int readKeyFromConfig(char queueName[])
   if (configFd == -1)
   {
     perror("opening config file error");
-    exit(1);
+    return -1;
   }
 
   int readValue = 1;
@@ -68,7 +70,7 @@ int readKeyFromConfig(char queueName[])
     if (readValue == -1)
     {
       perror("Read config file error");
-      exit(1);
+      return -1;
     }
 
     // Delete ':' from name
@@ -90,7 +92,7 @@ int readKeyFromConfig(char queueName[])
       if (readValue == -1)
       {
         perror("Read config file error");
-        exit(1);
+        return -1;
       }
       close(configFd);
       return atoi(keyBuf);
@@ -106,7 +108,7 @@ int readKeyFromConfig(char queueName[])
   // if couldn't find matching name
   close(configFd);
   write(2, "couldn't find matching queue name in config file\n", 50);
-  exit(1);
+  return -1;
 }
 
 // returns ID of created queue
@@ -117,7 +119,7 @@ int createProcessQueue(int key)
   if (QueueId == -1)
   {
     perror("Create process queue error");
-    exit(1);
+    return -1;
   }
   return QueueId;
 }
@@ -128,14 +130,14 @@ int waitForMessages(int queueId, struct msgbuf *messageBuf)
   if (received == -1)
   {
     perror("receiving message error");
-    exit(1);
+    return -1;
   }
   return received;
 }
 
-int splitRequest(char request[], struct request *requestBuf)
+int splitRequest(char requestText[], struct request *requestBody)
 {
-  int requestSize = strlen(request);
+  int requestSize = strlen(requestText);
   int current = 0;
   char buf;
 
@@ -143,7 +145,7 @@ int splitRequest(char request[], struct request *requestBuf)
   char queueNameBuf[MAX_QUEUE_NAME];
   while ((buf != ' ') && (current < requestSize))
   {
-    buf = request[current];
+    buf = requestText[current];
     queueNameBuf[current++] = buf;
     if (current > MAX_QUEUE_NAME)
     {
@@ -153,12 +155,12 @@ int splitRequest(char request[], struct request *requestBuf)
   }
 
   // update buf
-  buf = request[current];
+  buf = requestText[current];
 
   // get rid of extra spaces
   while ((buf == ' ') && (current < requestSize))
   {
-    buf = request[++current];
+    buf = requestText[++current];
   }
 
   if (current >= requestSize)
@@ -175,7 +177,7 @@ int splitRequest(char request[], struct request *requestBuf)
   {
     do
     {
-      buf = request[++current];
+      buf = requestText[++current];
       commandBuf[i++] = buf;
       if (i > MAX_COMMANDS_SIZE)
       {
@@ -184,14 +186,14 @@ int splitRequest(char request[], struct request *requestBuf)
       }
     } while ((buf != '"') && (current < requestSize));
     commandBuf[i - 1] = '\0';
-    buf = request[++current];
+    buf = requestText[++current];
   }
   else
   {
     while (buf != ' ' && (current < requestSize))
     {
       commandBuf[i++] = buf;
-      buf = request[++current];
+      buf = requestText[++current];
       if (i > MAX_COMMANDS_SIZE)
       {
         write(2, "too long commands\n", 19);
@@ -202,12 +204,12 @@ int splitRequest(char request[], struct request *requestBuf)
   }
 
   // update buf
-  buf = request[current];
+  buf = requestText[current];
 
   // get rid of extra spaces
   while ((buf == ' ') && (current < requestSize))
   {
-    buf = request[current++];
+    buf = requestText[current++];
   }
 
   if (current >= requestSize)
@@ -223,7 +225,7 @@ int splitRequest(char request[], struct request *requestBuf)
   {
     do
     {
-      buf = request[current++];
+      buf = requestText[current++];
       fifoNameBuf[i++] = buf;
       if (i > MAX_FIFO_NAME)
       {
@@ -243,7 +245,7 @@ int splitRequest(char request[], struct request *requestBuf)
     while (buf != ' ' && buf != '\n' && (current < requestSize))
     {
       fifoNameBuf[i++] = buf;
-      buf = request[current++];
+      buf = requestText[current++];
       if (i > MAX_FIFO_NAME)
       {
         write(2, "too long fifo name\n", 20);
@@ -253,7 +255,57 @@ int splitRequest(char request[], struct request *requestBuf)
     fifoNameBuf[i] = '\0';
   }
 
-  strcpy(requestBuf->queueName, queueNameBuf);
-  strcpy(requestBuf->commands, commandBuf);
-  strcpy(requestBuf->fifoName, fifoNameBuf);
+  strcpy(requestBody->queueName, queueNameBuf);
+  strcpy(requestBody->commands, commandBuf);
+  strcpy(requestBody->fifoName, fifoNameBuf);
+  return 0;
+}
+
+int sendFifoName(char fifoName[], char queueName[])
+{
+  int processKey = readKeyFromConfig(queueName);
+  if (processKey == -1)
+  {
+    return -1;
+  }
+
+  int queueId = msgget(processKey, 0640);
+  if (queueId == -1)
+  {
+    perror("get queue error");
+    return -1;
+  }
+
+  struct msgbuf message;
+  strcpy(message.fifoName, fifoName);
+  message.mtype = 1;
+
+  int wasSend = msgsnd(queueId, &message, MSG_SIZE, 0);
+  if (wasSend == -1)
+  {
+    perror("send message error");
+    return -1;
+  }
+
+  return 0;
+}
+
+int receiveResponse(char fifoName[], char responseBuf[])
+{
+  int deskToRead = open(fifoName, O_RDONLY);
+  if (deskToRead == -1)
+  {
+    perror("open fifo error");
+    return -1;
+  }
+
+  int readRes = read(deskToRead, responseBuf, MAX_RESPONSE);
+  if (readRes == -1)
+  {
+    close(deskToRead);
+    perror("read from fifo error");
+    return -1;
+  }
+  close(deskToRead);
+  return 0;
 }
