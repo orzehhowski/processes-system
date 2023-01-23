@@ -13,27 +13,40 @@ int main(int argc, char *argv[])
     exit(1);
   }
 
-  int queueId = createProcessQueue(queueKey);
-  if (queueId == -1)
-  {
-    exit(1);
-  }
-
   if (fork())
   {
     struct msgbuf messageBuf;
     int go = 1;
     while (go)
     {
-      close(0);
+      int queueId = createProcessQueue(queueKey);
+      if (queueId == -1)
+      {
+        exit(1);
+      }
+
+      printf("[1] waiting for message from other process\n");
+
       waitForMessages(queueId, &messageBuf);
+
+      printf("[1] message received, reading from fifo %s\n", messageBuf.fifoName);
+
       // open given fifo
-      char ans[MAX_COMMANDS_SIZE];
-      int id = open(messageBuf.fifoName, O_RDONLY);
-      read(id, ans, MAX_COMMANDS_SIZE);
-      printf("%s\n", ans);
+
+      char commands[MAX_COMMANDS_SIZE];
+      int wasReaden = readFromFifo(messageBuf.fifoName, commands, MAX_COMMANDS_SIZE);
+      if (wasReaden == -1)
+      {
+        continue;
+      }
+      printf("[1] request received: %s\n", commands);
+
       // execute command
-      // save results to fifo
+      int execRes = executeCommands(commands, messageBuf.fifoName);
+      if (execRes == -1)
+      {
+        continue;
+      }
     }
   }
   else
@@ -44,6 +57,7 @@ int main(int argc, char *argv[])
       char requestText[MAX_REQUEST] = "";
 
       // wait for user input
+      printf("[2] waiting for user input\n");
       read(0, requestText, MAX_REQUEST);
 
       struct request requestBody;
@@ -53,9 +67,11 @@ int main(int argc, char *argv[])
         continue;
       }
 
-      printf("1. %s\n2. %s\n3. %s\n", requestBody.queueName, requestBody.commands, requestBody.fifoName);
+      printf("[2] input received:\n    call process %s to execute %s and send results through fifo %s\n",
+             requestBody.queueName, requestBody.commands, requestBody.fifoName);
 
       // create fifo
+      printf("[2] creating fifo %s\n", requestBody.fifoName);
       int wasMade = mkfifo(requestBody.fifoName, 0640);
       if (wasMade == -1)
       {
@@ -64,6 +80,8 @@ int main(int argc, char *argv[])
       }
 
       // send request (fifo name) to queue of given process
+
+      printf("[2] sending fifo name to %s\n", requestBody.queueName);
       int wasSent = sendFifoName(requestBody.fifoName, requestBody.queueName);
       if (wasSent == -1)
       {
@@ -71,6 +89,7 @@ int main(int argc, char *argv[])
       }
 
       // save commands to do in fifo
+      printf("[2] saving commands [%s] to fifo %s\n", requestBody.commands, requestBody.fifoName);
       int deskToSend = open(requestBody.fifoName, O_WRONLY);
       if (deskToSend == -1)
       {
@@ -89,14 +108,18 @@ int main(int argc, char *argv[])
       // wait for results given through fifo and print it
 
       char response[MAX_RESPONSE];
-
-      int wasResponse = receiveResponse(requestBody.fifoName, response);
+      printf("[2] waiting for response\n");
+      int wasResponse = readFromFifo(requestBody.fifoName, response, MAX_RESPONSE);
       if (wasResponse == -1)
       {
         continue;
       }
 
-      write(1, response, MAX_RESPONSE);
+      unlink(requestBody.fifoName);
+
+      printf("[2] response received\n");
+      write(1, response, strlen(response));
+      write(1, "\n\n", 3);
     }
   }
 }

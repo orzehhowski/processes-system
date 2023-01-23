@@ -99,10 +99,10 @@ int readKeyFromConfig(char queueName[])
     }
 
     // else go to next line
-    char buf;
-    while (buf != '\n')
+    char buf = 0;
+    while (buf != '\n' && readValue > 0)
     {
-      read(configFd, &buf, 1);
+      readValue = read(configFd, &buf, 1);
     }
   }
   // if couldn't find matching name
@@ -126,7 +126,7 @@ int createProcessQueue(int key)
 
 int waitForMessages(int queueId, struct msgbuf *messageBuf)
 {
-  int received = msgrcv(queueId, messageBuf, MSG_SIZE, 1, 0);
+  int received = msgrcv(queueId, messageBuf, MSG_SIZE, 0, 0);
   if (received == -1)
   {
     perror("receiving message error");
@@ -268,8 +268,7 @@ int sendFifoName(char fifoName[], char queueName[])
   {
     return -1;
   }
-
-  int queueId = msgget(processKey, 0640);
+  int queueId = msgget(processKey, IPC_CREAT | 0640);
   if (queueId == -1)
   {
     perror("get queue error");
@@ -280,7 +279,7 @@ int sendFifoName(char fifoName[], char queueName[])
   strcpy(message.fifoName, fifoName);
   message.mtype = 1;
 
-  int wasSend = msgsnd(queueId, &message, MSG_SIZE, 0);
+  int wasSend = msgsnd(queueId, &message, MSG_SIZE, IPC_NOWAIT);
   if (wasSend == -1)
   {
     perror("send message error");
@@ -290,7 +289,7 @@ int sendFifoName(char fifoName[], char queueName[])
   return 0;
 }
 
-int receiveResponse(char fifoName[], char responseBuf[])
+int readFromFifo(char fifoName[], char messageBuf[], int maxSize)
 {
   int deskToRead = open(fifoName, O_RDONLY);
   if (deskToRead == -1)
@@ -299,7 +298,7 @@ int receiveResponse(char fifoName[], char responseBuf[])
     return -1;
   }
 
-  int readRes = read(deskToRead, responseBuf, MAX_RESPONSE);
+  int readRes = read(deskToRead, messageBuf, maxSize);
   if (readRes == -1)
   {
     close(deskToRead);
@@ -307,5 +306,137 @@ int receiveResponse(char fifoName[], char responseBuf[])
     return -1;
   }
   close(deskToRead);
+  return 0;
+}
+
+int splitBy(char toSplit[], char *mainBuf[], char splitter)
+{
+  int size = strlen(toSplit);
+  int current = 0;
+  int currentWord = 0;
+  while (current < size)
+  {
+    char buf = toSplit[current];
+    char wordBuf[64];
+    int i = 0;
+    while (buf != splitter && current < size)
+    {
+      wordBuf[i++] = buf;
+      buf = toSplit[++current];
+    }
+    wordBuf[i] = '\0';
+    while (buf == splitter && current < size)
+    {
+      buf = toSplit[++current];
+    }
+    if (i < 1)
+    {
+      continue;
+    }
+    mainBuf[currentWord] = (char *)malloc(16);
+    strcpy(mainBuf[currentWord++], wordBuf);
+  }
+  return currentWord;
+}
+
+int executeCommands(char commands[], char fifoName[])
+{
+  char *commandsArray[16];
+  char results[MAX_RESPONSE];
+
+  int commandsNum = splitBy(commands, commandsArray, '|');
+  commandsArray[commandsNum] = NULL;
+
+  int pdesks[2 * commandsNum];
+  int i;
+  for (i = 0; i < commandsNum; i++)
+  {
+    if (pipe(pdesks + i * 2) == -1)
+    {
+      perror("create pipe error");
+      return -1;
+    }
+  }
+  int resultDesk[2];
+  if (pipe(resultDesk) == -1)
+  {
+    perror("create pipe error");
+    return -1;
+  }
+
+  int currentIndex = 0;
+  while (commandsArray[currentIndex] != NULL)
+  {
+
+    printf("[1] executing command %s\n", commandsArray[currentIndex]);
+
+    char *execVector[16];
+    int vectorLen = splitBy(commandsArray[currentIndex], execVector, ' ');
+    execVector[vectorLen] = NULL;
+
+    if (!fork())
+    {
+
+      // if not first command
+      if (currentIndex != 0)
+      {
+        if (dup2(pdesks[(currentIndex - 1) * 2], 0) == -1)
+        {
+          perror("dup error");
+          return -1;
+        }
+      }
+
+      // if not last command
+      if (currentIndex != commandsNum - 1)
+      {
+        if (dup2(pdesks[currentIndex * 2 + 1], 1) == -1)
+        {
+          perror("dup error");
+          return -1;
+        }
+      }
+
+      // if last command
+      if (currentIndex == commandsNum - 1)
+      {
+        // CZEMU TO NIE DZIALAAAAAAAA
+        // dup2(resultDesk[1], 1);
+
+        // save to FIFO
+
+        printf("[1] saving result to fifo %s\n", fifoName);
+
+        int fifoDs = open(fifoName, O_WRONLY);
+        if (fifoDs == -1)
+        {
+          perror("open fifo error");
+          return -1;
+        }
+
+        if (dup2(fifoDs, 1) == -1)
+        {
+          perror("dup error");
+          return -1;
+        }
+      }
+
+      int i;
+      for (i = 0; i < commandsNum * 2; i++)
+      {
+        close(pdesks[i]);
+      }
+
+      execvp(execVector[0], execVector);
+    }
+
+    currentIndex++;
+  }
+
+  for (i = 0; i < commandsNum * 2; i++)
+  {
+    close(pdesks[i]);
+  }
+
   return 0;
 }
