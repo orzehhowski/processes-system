@@ -107,7 +107,7 @@ int main(int argc, char *argv[])
 
       // wait for results given through fifo and print it
 
-      char response[MAX_RESPONSE];
+      char response[MAX_RESPONSE] = "";
       printf("[2] waiting for response\n");
       int wasResponse = readFromFifo(requestBody.fifoName, response, MAX_RESPONSE);
       if (wasResponse == -1)
